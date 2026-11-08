@@ -21,11 +21,26 @@ android {
             keyAlias = "androiddebugkey"
             keyPassword = "android"
         }
+        create("releaseConfig") {
+            val keystoreFile = rootProject.file("keystore/rekab.jks")
+            if (keystoreFile.exists()) {
+                storeFile = keystoreFile
+                storePassword = "rekab123"
+                keyAlias = "rekab"
+                keyPassword = "rekab123"
+            } else {
+                storeFile = file("${rootDir}/debug.keystore")
+                storePassword = "android"
+                keyAlias = "androiddebugkey"
+                keyPassword = "android"
+            }
+        }
     }
 
     buildTypes {
         getByName("release") {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("releaseConfig")
         }
         getByName("debug") {
             signingConfig = signingConfigs.getByName("debugConfig")
