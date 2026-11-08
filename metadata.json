@@ -1,0 +1,9 @@
+{
+  "name": "ReKab by firdaus",
+  "description": "Rekam Kamera Bawaan — dashcam from the car's own cameras with multi-camera loop recording and Wi-Fi clip server.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ],
+  "majorCapabilities": []
+}

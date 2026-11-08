@@ -14,9 +14,8 @@ import android.view.Surface
 import java.io.File
 
 /**
- * Records one camera in fixed-length segments (loop recording).
- * Survives the camera being taken by the system (e.g. 360° view when reversing):
- * it closes, waits, and reopens.
+ * Records one camera in fixed-length segments (loop recording), routing the H.264/MP4
+ * camera stream directly to the external USB mount point validated by [DiskManagerService].
  */
 class CameraRecorder(
     private val ctx: Context,
@@ -33,6 +32,7 @@ class CameraRecorder(
     private var recorder: MediaRecorder? = null
     private var surface: Surface? = null
     private var file: File? = null
+    private var streamTarget: DirectStreamTarget? = null
     @Volatile private var stopped = false
     @Volatile var status: String = "starting"
         private set
@@ -55,13 +55,20 @@ class CameraRecorder(
     @SuppressLint("MissingPermission")
     private fun open() {
         if (stopped) return
+        val activeMount = DiskManagerService.activeMount(ctx)
+        if (activeMount == null || !activeMount.isReadyForStream) {
+            status = "waiting for writable external USB drive"
+            AppLog.i("Camera ${info.id}: waiting for validated external USB mount point")
+            retryLater()
+            return
+        }
         status = "opening camera"
         try {
             cm.openCamera(info.id, object : CameraDevice.StateCallback() {
                 override fun onOpened(d: CameraDevice) {
                     if (stopped) { d.close(); return }
                     device = d
-                    AppLog.i("Camera ${info.id} opened")
+                    AppLog.i("Camera ${info.id} (${info.role}) opened")
                     beginSegment()
                 }
 
@@ -109,15 +116,26 @@ class CameraRecorder(
     private fun beginSegment() {
         val d = device ?: return
         if (stopped) return
+
+        // Request a direct stream file descriptor on the validated external USB mount point
+        val target = DiskManagerService.openDirectCameraStreamTarget(ctx, info.id)
+        if (target == null) {
+            status = "external USB drive unavailable / write denied"
+            AppLog.i("Camera ${info.id}: DiskManagerService rejected stream target — stopping recording")
+            RecorderService.stop(ctx)
+            return
+        }
+        val out = target.clipFile
+
         val size = info.pickVideoSize(prefs.maxHeight)
         if (size == null) {
+            target.closeDescriptorQuietly()
             status = "camera has no recordable sizes"
             AppLog.i("Camera ${info.id}: no MediaRecorder sizes, cannot record")
             return
         }
         val fps = info.pickFps()
         val fpsVal = fps?.upper?.coerceAtMost(30) ?: 30
-        val out = Storage.newClip(ctx, info.id)
         val bitrate = (size.width.toLong() * size.height * fpsVal / 8).coerceIn(1_000_000L, 12_000_000L).toInt()
 
         val mr = if (Build.VERSION.SDK_INT >= 31) MediaRecorder(ctx) else MediaRecorder()
@@ -125,7 +143,8 @@ class CameraRecorder(
             if (withAudio) mr.setAudioSource(MediaRecorder.AudioSource.MIC)
             mr.setVideoSource(MediaRecorder.VideoSource.SURFACE)
             mr.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
-            mr.setOutputFile(out.absolutePath)
+            // Route camera encoder stream directly to the external USB mount point's file descriptor
+            mr.setOutputFile(target.parcelFd.fileDescriptor)
             mr.setVideoEncoder(MediaRecorder.VideoEncoder.H264)
             mr.setVideoEncodingBitRate(bitrate)
             mr.setVideoFrameRate(fpsVal)
@@ -149,12 +168,14 @@ class CameraRecorder(
         } catch (e: Exception) {
             AppLog.e("Camera ${info.id}: recorder setup failed at ${size.width}x${size.height}", e)
             try { mr.release() } catch (_: Exception) {}
+            target.closeDescriptorQuietly()
             out.delete()
             status = "recorder setup failed (retrying)"
             handler.postDelayed({ beginSegment() }, 5_000)
             return
         }
 
+        streamTarget = target
         recorder = mr
         file = out
         val s = mr.surface
@@ -171,8 +192,8 @@ class CameraRecorder(
                         }
                         cs.setRepeatingRequest(req.build(), null, handler)
                         mr.start()
-                        status = "REC ${size.width}x${size.height} → ${out.name}"
-                        AppLog.i("Camera ${info.id}: recording ${out.name}")
+                        status = "REC ${size.width}x${size.height} → ${target.mount.mountPoint.absolutePath}/${out.name}"
+                        AppLog.i("Camera ${info.id}: streaming directly to USB mount ${target.mount.mountPoint.absolutePath} (${out.name})")
                     } catch (e: Exception) {
                         AppLog.e("Camera ${info.id}: could not start recording", e)
                         status = "start failed (retrying)"
@@ -211,14 +232,14 @@ class CameraRecorder(
         val cs = session; session = null
         val mr = recorder; recorder = null
         val f = file; file = null
+        val st = streamTarget; streamTarget = null
         try { cs?.stopRepeating() } catch (_: Exception) {}
         try { cs?.abortCaptures() } catch (_: Exception) {}
         if (mr != null) {
-            // stop() can throw after max duration (already stopped) or when no frames
-            // were written; tiny files are removed below.
             try { mr.stop() } catch (_: Exception) {}
             try { mr.release() } catch (_: Exception) {}
         }
+        st?.closeDescriptorQuietly()
         try { cs?.close() } catch (_: Exception) {}
         try { surface?.release() } catch (_: Exception) {}
         surface = null

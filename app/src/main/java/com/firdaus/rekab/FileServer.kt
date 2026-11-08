@@ -19,7 +19,7 @@ import java.util.concurrent.Executors
 
 /**
  * Tiny web server so a phone on the same Wi-Fi (e.g. the phone's hotspot that the
- * head unit is connected to) can browse, play and download the clips.
+ * head unit is connected to) can browse, play and download the clips from the external hard drive.
  */
 object FileServer {
     private var server: ServerSocket? = null
@@ -73,8 +73,6 @@ object FileServer {
         } catch (_: Exception) { emptyList() }
     }
 
-    // ---------------------------------------------------------------------
-
     private fun handle(sock: Socket) {
         sock.use { s ->
             try {
@@ -122,11 +120,11 @@ object FileServer {
         }
     }
 
-    /** Resolves a relative path inside the clips folder; refuses anything outside it. */
+    /** Resolves a relative path inside the external drive clips folder; refuses anything outside it. */
     private fun resolve(rel: String): File? {
-        val base = Storage.base(app).canonicalFile
-        val f = File(base, rel).canonicalFile
-        return if (f.path.startsWith(base.path + File.separator) && f.isFile) f else null
+        val b = Storage.baseOrNull(app)?.canonicalFile ?: return null
+        val f = File(b, rel).canonicalFile
+        return if (f.path.startsWith(b.path + File.separator) && f.isFile) f else null
     }
 
     private fun serveFile(out: OutputStream, rel: String, range: String?, download: Boolean, head: Boolean) {
@@ -181,17 +179,16 @@ object FileServer {
     }
 
     private fun lock(rel: String) {
+        val lockedFolder = Storage.lockedDir(app) ?: return
         resolve(rel)?.let {
-            val dest = File(Storage.lockedDir(app), it.name)
+            val dest = File(lockedFolder, it.name)
             if (it.renameTo(dest)) AppLog.i("Locked from phone: ${it.name}")
         }
     }
 
     private fun indexPage(): String {
-        val base = Storage.base(app)
+        val base = Storage.baseOrNull(app)
         val df = SimpleDateFormat("dd MMM yyyy HH:mm:ss", Locale.US)
-        val dirs = (base.listFiles() ?: emptyArray()).filter { it.isDirectory }
-            .sortedWith(compareBy({ it.name != Storage.LOCKED }, { it.name }))
         val sb = StringBuilder()
         sb.append("""<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -205,8 +202,15 @@ h2{font-size:16px;margin:20px 16px 8px;color:#f8fafc}
 a.b{display:inline-block;margin-right:8px;padding:7px 12px;border-radius:8px;background:#334155;color:#fff;text-decoration:none;font-size:13px}
 a.p{background:#2563eb} a.d{background:#7f1d1d}
 </style></head><body><header><h1>ReKab by firdaus</h1>""")
-        sb.append("<div class=sub>${RecorderService.summary()} · free ${Storage.gb(Storage.freeBytes(base))}</div></header>")
-        if (dirs.isEmpty()) sb.append("<p style='padding:16px'>No clips yet.</p>")
+        if (base == null) {
+            sb.append("<div class=sub>${RecorderService.summary()} · No external hard drive connected</div></header>")
+            sb.append("<p style='padding:16px;color:#f87171'>⚠️ Please plug in an external USB hard drive to the Car Head Unit.</p></body></html>")
+            return sb.toString()
+        }
+        val dirs = (base.listFiles() ?: emptyArray()).filter { it.isDirectory }
+            .sortedWith(compareBy({ it.name != Storage.LOCKED }, { it.name }))
+        sb.append("<div class=sub>${RecorderService.summary()} · External HDD free ${Storage.gb(Storage.freeBytes(base))}</div></header>")
+        if (dirs.isEmpty()) sb.append("<p style='padding:16px'>No clips yet on external hard drive.</p>")
         for (d in dirs) {
             val files = (d.listFiles() ?: emptyArray()).filter { it.isFile && it.name.endsWith(".mp4") }
                 .sortedByDescending { it.lastModified() }

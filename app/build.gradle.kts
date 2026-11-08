@@ -1,44 +1,41 @@
 plugins {
     id("com.android.application")
-    id("org.jetbrains.kotlin.android")
 }
 
 android {
     namespace = "com.firdaus.rekab"
-    compileSdk = 34
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "com.firdaus.rekab"
         minSdk = 26
-        targetSdk = 34
+        targetSdk = 36
         versionCode = 1
         versionName = "1.0.0"
     }
 
     signingConfigs {
-        create("rekab") {
-            storeFile = rootProject.file("keystore/rekab.jks")
-            storePassword = "rekab123"
-            keyAlias = "rekab"
-            keyPassword = "rekab123"
+        create("debugConfig") {
+            storeFile = file("${rootDir}/debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
         }
     }
 
     buildTypes {
         getByName("release") {
             isMinifyEnabled = false
-            signingConfig = signingConfigs.getByName("rekab")
         }
         getByName("debug") {
-            signingConfig = signingConfigs.getByName("rekab")
+            signingConfig = signingConfigs.getByName("debugConfig")
         }
     }
 
     compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_17
-        targetCompatibility = JavaVersion.VERSION_17
+        sourceCompatibility = JavaVersion.VERSION_21
+        targetCompatibility = JavaVersion.VERSION_21
     }
-    kotlinOptions { jvmTarget = "17" }
 }
 
 dependencies {

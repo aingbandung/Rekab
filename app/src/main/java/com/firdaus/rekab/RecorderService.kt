@@ -15,7 +15,7 @@ import android.os.PowerManager
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
 
-/** Foreground service that keeps the selected cameras recording. */
+/** Foreground service that keeps the selected car cameras streaming directly to the external USB mount point. */
 class RecorderService : Service() {
 
     companion object {
@@ -29,6 +29,7 @@ class RecorderService : Service() {
             private set
 
         fun start(ctx: Context) {
+            DiskManagerService.ensureStarted(ctx)
             Prefs(ctx).recordingWanted = true
             ContextCompat.startForegroundService(ctx, Intent(ctx, RecorderService::class.java).setAction(ACTION_START))
         }
@@ -41,7 +42,7 @@ class RecorderService : Service() {
         fun statusLines(): List<String> = recorders.map { "Camera ${it.id}: ${it.status}" }
 
         fun summary(): String =
-            if (!running) "Not recording" else "Recording ${recorders.size} camera(s)"
+            if (!running) "Not recording" else "Streaming ${recorders.size} camera(s) directly to External USB Mount"
     }
 
     private var wakeLock: PowerManager.WakeLock? = null
@@ -63,6 +64,7 @@ class RecorderService : Service() {
     }
 
     private fun begin() {
+        DiskManagerService.ensureStarted(this)
         val prefs = Prefs(this)
         val camOk = ContextCompat.checkSelfPermission(this, android.Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
         val micOk = ContextCompat.checkSelfPermission(this, android.Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
@@ -74,7 +76,7 @@ class RecorderService : Service() {
             if (audio) type = type or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
         }
         try {
-            ServiceCompat.startForeground(this, NOTIF_ID, notification("Starting…"), type)
+            ServiceCompat.startForeground(this, NOTIF_ID, notification("Validating USB mount & starting…"), type)
         } catch (e: Exception) {
             AppLog.e("Cannot start foreground recording service", e)
             stopSelf(); return
@@ -84,12 +86,28 @@ class RecorderService : Service() {
             stopSelf(); return
         }
 
+        // Validate connected external USB drive & write permissions via DiskManagerService
+        val mounts = DiskManagerService.triggerProbe(this)
+        val activeMount = DiskManagerService.activeMount(this)
+        if (activeMount == null || !activeMount.writableVerified) {
+            val reason = activeMount?.validationDetail ?: "No external USB drive connected (found ${mounts.size} mount(s))"
+            AppLog.i("DiskManagerService blocked recording: $reason")
+            stopSelf(); return
+        }
+        if (!activeMount.hasSufficientSpace) {
+            Storage.cleanup(this)
+            if (DiskManagerService.queryFreeBytes(activeMount.streamRootDir) < DiskManagerService.MIN_REQUIRED_FREE_BYTES) {
+                AppLog.i("DiskManagerService blocked recording: External USB drive is full")
+                stopSelf(); return
+            }
+        }
+
+        val all = CameraProbe.scan(this, probeHidden = true).associateBy { it.id }
         val wanted = prefs.selectedCameras
         if (wanted.isEmpty()) {
             AppLog.i("No camera selected — tick at least one camera")
             stopSelf(); return
         }
-        val all = CameraProbe.scan(this, probeHidden = true).associateBy { it.id }
         val list = mutableListOf<CameraRecorder>()
         var micGiven = false
         for (id in wanted.sorted()) {
@@ -109,8 +127,8 @@ class RecorderService : Service() {
         recorders = list
         running = true
         list.forEach { it.start() }
-        updateNotification("Recording ${list.size} camera(s): ${list.joinToString { it.id }}")
-        AppLog.i("Recording started → ${Storage.base(this).absolutePath}")
+        updateNotification("Streaming ${list.size} cam(s) → ${activeMount.mountPoint.absolutePath}")
+        AppLog.i("Direct USB stream started → Mount: ${activeMount.mountPoint.absolutePath} (${activeMount.streamRootDir.absolutePath})")
     }
 
     private fun stopAll() {

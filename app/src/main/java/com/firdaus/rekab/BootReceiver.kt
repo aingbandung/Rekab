@@ -6,17 +6,28 @@ import android.content.Intent
 import android.os.Handler
 import android.os.Looper
 
-/** Starts recording after the head unit boots, if the user enabled it. */
+/** Starts DiskManagerService and recording after the head unit boots, if enabled and USB drive is writable. */
 class BootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
-        val p = Prefs(context)
-        if (!p.autoStartOnBoot || p.selectedCameras.isEmpty()) return
-        AppLog.i("Boot: auto-starting recording in 10 s")
+        val appCtx = context.applicationContext
+        DiskManagerService.ensureStarted(appCtx)
+        val p = Prefs(appCtx)
+        if (!p.autoStartOnBoot) return
+        AppLog.i("Boot: starting DiskManagerService and scanning car cameras in 10 s")
         val pending = goAsync()
-        // give the car's camera system time to come up
         Handler(Looper.getMainLooper()).postDelayed({
-            try { RecorderService.start(context.applicationContext) }
-            catch (e: Exception) { AppLog.e("Boot auto-start failed", e) }
+            try {
+                CameraProbe.scan(appCtx, probeHidden = true)
+                val mounts = DiskManagerService.triggerProbe(appCtx)
+                val active = DiskManagerService.activeMount(appCtx)
+                if (active == null || !active.isReadyForStream) {
+                    AppLog.i("Boot: skipped auto-record — no writable external USB mount (detected ${mounts.size})")
+                } else if (Prefs(appCtx).selectedCameras.isNotEmpty()) {
+                    RecorderService.start(appCtx)
+                }
+            } catch (e: Exception) {
+                AppLog.e("Boot auto-start failed", e)
+            }
             pending.finish()
         }, 10_000)
     }

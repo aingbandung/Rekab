@@ -12,6 +12,10 @@ class Prefs(context: Context) {
         get() = sp.getStringSet("cams", emptySet())?.toSet() ?: emptySet()
         set(v) = sp.edit().putStringSet("cams", v).apply()
 
+    var autoDetectedOnce: Boolean
+        get() = sp.getBoolean("autoDetectedOnce", false)
+        set(v) = sp.edit().putBoolean("autoDetectedOnce", v).apply()
+
     /** Max height of the recorded video: 480, 720, 1080 or 0 = largest available. */
     var maxHeight: Int
         get() = sp.getInt("maxH", 720)
@@ -26,7 +30,7 @@ class Prefs(context: Context) {
         get() = sp.getInt("maxGb", 16)
         set(v) = sp.edit().putInt("maxGb", v).apply()
 
-    /** Index into Context.getExternalFilesDirs(null): 0 = internal, 1+ = USB / SD. */
+    /** Index into Storage.externalRoots(ctx): external USB hard drives only. */
     var storageIndex: Int
         get() = sp.getInt("storage", 0)
         set(v) = sp.edit().putInt("storage", v).apply()
