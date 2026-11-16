@@ -6,7 +6,9 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
+import android.content.BroadcastReceiver
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.os.Build
@@ -41,11 +43,59 @@ class RecorderService : Service() {
 
         fun statusLines(): List<String> = recorders.map { "Camera ${it.id}: ${it.status}" }
 
+        /**
+         * Finalizes every open clip right now and waits for it (max [timeoutMs]).
+         * Called before power off or before the USB drive goes away.
+         * Does not change the user's "recording wanted" setting.
+         */
+        fun finalizeAll(reason: String, timeoutMs: Long = 4_000): Boolean {
+            val list = recorders
+            if (list.isEmpty()) return true
+            AppLog.i("$reason — closing ${list.size} clip(s) safely")
+            val t0 = System.currentTimeMillis()
+            // stop in parallel so several cameras share the same time budget
+            val results = list.map { r ->
+                val t = Thread { r.stopBlocking(timeoutMs) }
+                t.start(); t
+            }
+            results.forEach { it.join((timeoutMs - (System.currentTimeMillis() - t0)).coerceAtLeast(1)) }
+            recorders = emptyList()
+            running = false
+            AppLog.i("Clips closed in ${System.currentTimeMillis() - t0} ms")
+            return true
+        }
+
         fun summary(): String =
             if (!running) "Not recording" else "Streaming ${recorders.size} camera(s) directly to External USB Mount"
     }
 
     private var wakeLock: PowerManager.WakeLock? = null
+    private var powerReceiverOn = false
+
+    /**
+     * Power events from the head unit:
+     * - shutdown / power-off: close every clip properly so the last MP4 is not corrupted.
+     * - screen off (often the first sign of ACC off / sleep): close the current clip and
+     *   start a new one, so everything recorded so far is safely saved.
+     */
+    private val powerReceiver = object : BroadcastReceiver() {
+        override fun onReceive(c: android.content.Context?, i: Intent?) {
+            when (i?.action) {
+                Intent.ACTION_SCREEN_OFF -> {
+                    AppLog.i("Screen off — saving current clip(s)")
+                    recorders.forEach { it.rollSegment() }
+                }
+                else -> {
+                    val r = goAsync()
+                    Thread {
+                        try {
+                            finalizeAll("Head unit powering off (${i?.action?.substringAfterLast('.')})")
+                        } finally { r.finish() }
+                    }.start()
+                }
+            }
+        }
+    }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -124,6 +174,7 @@ class RecorderService : Service() {
 
         if (prefs.phoneAccess) FileServer.start(this, prefs.port)
         Storage.cleanup(this)
+        registerPowerReceiver()
         recorders = list
         running = true
         list.forEach { it.start() }
@@ -131,11 +182,30 @@ class RecorderService : Service() {
         AppLog.i("Direct USB stream started → Mount: ${activeMount.mountPoint.absolutePath} (${activeMount.streamRootDir.absolutePath})")
     }
 
+    private fun registerPowerReceiver() {
+        if (powerReceiverOn) return
+        val f = IntentFilter().apply {
+            addAction(Intent.ACTION_SHUTDOWN)
+            addAction("android.intent.action.QUICKBOOT_POWEROFF")
+            addAction("com.htc.intent.action.QUICKBOOT_POWEROFF")
+            addAction(Intent.ACTION_REBOOT)
+            addAction(Intent.ACTION_SCREEN_OFF)
+        }
+        try {
+            if (Build.VERSION.SDK_INT >= 33) registerReceiver(powerReceiver, f, android.content.Context.RECEIVER_EXPORTED)
+            else registerReceiver(powerReceiver, f)
+            powerReceiverOn = true
+        } catch (e: Exception) { AppLog.e("Cannot watch power events", e) }
+    }
+
     private fun stopAll() {
+        if (powerReceiverOn) {
+            try { unregisterReceiver(powerReceiver) } catch (_: Exception) {}
+            powerReceiverOn = false
+        }
         if (running) AppLog.i("Recording stopped")
-        recorders.forEach { it.stop() }
-        recorders = emptyList()
-        running = false
+        // finalize properly (waits up to 4 s) instead of fire-and-forget
+        finalizeAll("Stopping")
         try { wakeLock?.release() } catch (_: Exception) {}
         wakeLock = null
         ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)

@@ -354,6 +354,9 @@ class MainActivity : Activity() {
             listOf(4, 8, 16, 32, 64, 128, 256, 512), prefs.maxStorageGb) { prefs.maxStorageGb = it })
         root.addView(check("Record sound from microphone", prefs.recordAudio) { prefs.recordAudio = it })
         root.addView(check("Start recording automatically when the car turns on (requires writable USB mount)", prefs.autoStartOnBoot) { prefs.autoStartOnBoot = it })
+        root.addView(check("Start recording automatically when the USB drive is plugged in (car on only)", prefs.autoStartOnUsb) { prefs.autoStartOnUsb = it })
+        root.addView(text("Clips are closed safely when the screen turns off, the head unit shuts down, " +
+            "or the USB drive is ejected. Shorter clips (1–3 min) lose less if power is cut suddenly.", 13f, color = "#94A3B8"))
 
         root.addView(header("Save to phone (Wi-Fi Server)"))
         root.addView(text("Connect the head unit to your phone's Wi-Fi hotspot, then open one of these addresses in the phone's browser to play or download clips from the external USB mount:", 13f, color = "#94A3B8"))

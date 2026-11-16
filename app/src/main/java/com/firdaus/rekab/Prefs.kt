@@ -43,6 +43,11 @@ class Prefs(context: Context) {
         get() = sp.getBoolean("boot", false)
         set(v) = sp.edit().putBoolean("boot", v).apply()
 
+    /** Start recording by itself when a writable USB drive is plugged in (car on). */
+    var autoStartOnUsb: Boolean
+        get() = sp.getBoolean("usbAuto", true)
+        set(v) = sp.edit().putBoolean("usbAuto", v).apply()
+
     var phoneAccess: Boolean
         get() = sp.getBoolean("server", true)
         set(v) = sp.edit().putBoolean("server", v).apply()

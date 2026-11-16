@@ -72,11 +72,21 @@ class DiskManagerService : Service() {
         override fun onReceive(context: Context?, intent: Intent?) {
             val action = intent?.action ?: return
             AppLog.i("DiskManagerService event: ${action.substringAfterLast('.')}")
+            val ctx = this@DiskManagerService
+            if (action in GOING_AWAY && RecorderService.running) {
+                // Close the clips NOW, before the drive is unmounted, so the last MP4 is complete.
+                Thread {
+                    RecorderService.finalizeAll("USB drive is being removed")
+                    mainHandler.post { RecorderService.stop(ctx) }
+                }.start()
+            }
             mainHandler.postDelayed({
-                val mounts = scanAndValidateExternalDrives(this@DiskManagerService, forceProbe = true)
+                val mounts = scanAndValidateExternalDrives(ctx, forceProbe = true)
                 if (mounts.none { it.isReadyForStream } && RecorderService.running) {
                     AppLog.i("DiskManagerService: External USB drive lost or unwritable — stopping active recording")
-                    RecorderService.stop(this@DiskManagerService)
+                    RecorderService.stop(ctx)
+                } else if (action in ARRIVED) {
+                    autoStartIfReady(ctx, "USB drive connected")
                 }
             }, 600)
         }
@@ -140,6 +150,33 @@ class DiskManagerService : Service() {
         const val ACTION_RESCAN_AND_PROBE = "com.firdaus.rekab.DISK_RESCAN_AND_PROBE"
         const val MIN_REQUIRED_FREE_BYTES = 100L * 1024L * 1024L // 100 MB minimum to open a new stream segment
         private val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US)
+
+        private val GOING_AWAY = setOf(
+            Intent.ACTION_MEDIA_EJECT, Intent.ACTION_MEDIA_UNMOUNTED,
+            Intent.ACTION_MEDIA_REMOVED, Intent.ACTION_MEDIA_BAD_REMOVAL,
+            UsbManager.ACTION_USB_DEVICE_DETACHED,
+        )
+        private val ARRIVED = setOf(Intent.ACTION_MEDIA_MOUNTED, UsbManager.ACTION_USB_DEVICE_ATTACHED)
+
+        /**
+         * Starts recording when a writable USB drive is present, if the user enabled
+         * "auto-record when USB drive is plugged in" and picked cameras.
+         * Only runs while the head unit is on, so it never records with the car off.
+         */
+        fun autoStartIfReady(ctx: Context, why: String) {
+            val p = Prefs(ctx)
+            if (!p.autoStartOnUsb || RecorderService.running) return
+            if (p.selectedCameras.isEmpty()) {
+                AppLog.i("$why — auto-record skipped: no camera ticked"); return
+            }
+            val m = activeMount(ctx)
+            if (m == null || !m.isReadyForStream) {
+                AppLog.i("$why — auto-record waiting: drive not writable yet"); return
+            }
+            AppLog.i("$why — auto-record starting → ${m.mountPoint.absolutePath}")
+            try { RecorderService.start(ctx) }
+            catch (e: Exception) { AppLog.e("Auto-record could not start (open ReKab once)", e) }
+        }
 
         @Volatile var serviceRunning: Boolean = false
             private set

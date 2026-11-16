@@ -41,6 +41,33 @@ class CameraRecorder(
 
     fun start() = handler.post { open() }
 
+    /** Closes the current clip properly and starts a new one (used when the screen turns off). */
+    fun rollSegment() {
+        if (!stopped) handler.post { if (recorder != null) nextSegment() }
+    }
+
+    /**
+     * Stops and finalizes the clip, waiting up to [timeoutMs] so the MP4 is complete
+     * before power is cut. Returns true if it finished in time.
+     */
+    fun stopBlocking(timeoutMs: Long): Boolean {
+        stopped = true
+        val done = java.util.concurrent.CountDownLatch(1)
+        val posted = handler.postAtFrontOfQueue {
+            try {
+                endSegment()
+                try { device?.close() } catch (_: Exception) {}
+                device = null
+                status = "stopped"
+            } finally {
+                done.countDown()
+                thread.quitSafely()
+            }
+        }
+        if (!posted) return true
+        return done.await(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS)
+    }
+
     fun stop() {
         stopped = true
         handler.post {
